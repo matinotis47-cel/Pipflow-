@@ -1,0 +1,59 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --pf-primary: #1b8fe6;
+  --pf-secondary: #0f172a;
+  --pf-bg: #f8fafc;
+  --pf-card: #ffffff;
+  --pf-button: #1b8fe6;
+  --pf-radius: 10px;
+  --pf-font-display: 'Plus Jakarta Sans', system-ui, sans-serif;
+  --pf-font-body: 'DM Sans', system-ui, sans-serif;
+  --pf-font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+.dark {
+  --pf-bg: #080d17;
+  --pf-card: #0f1724;
+}
+
+body {
+  font-family: var(--pf-font-body);
+  background-color: var(--pf-bg);
+  color: #0f172a;
+}
+
+.dark body,
+html.dark body {
+  background-color: var(--pf-bg);
+  color: #f1f5f9;
+}
+
+h1, h2, h3, h4, .font-display {
+  font-family: var(--pf-font-display);
+}
+
+.font-mono,
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom thin scrollbars for trading panels */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 9999px;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(71, 85, 105, 0.55);
+}
