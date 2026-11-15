@@ -15,9 +15,12 @@ import adminRoutes from './server/routes/admin.ts';
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const port = Number.parseInt(process.env.PORT || '3000', 10);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('PORT must be a valid TCP port between 1 and 65535.');
+  }
 
-  // Trust Cloud Run / AI Studio reverse proxy for HTTPS detection
+  // Trust the Render / Cloud Run / AI Studio reverse proxy for HTTPS detection.
   app.set('trust proxy', 1);
 
   // Ensure DB initialized
@@ -26,7 +29,7 @@ async function startServer() {
   app.use(express.json({ limit: '4mb' }));
   app.use(cookieParser());
 
-  // Serve persistent uploaded logos
+  // Serve uploaded logos. In production, persist this directory on a mounted disk.
   const uploadsDir = path.resolve(process.cwd(), 'public', 'uploads');
   if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
@@ -101,9 +104,12 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`PIPFLOW server running on http://localhost:${PORT}`);
+  app.listen(port, '0.0.0.0', () => {
+    console.log(`PIPFLOW server listening on 0.0.0.0:${port}`);
   });
 }
 
-startServer();
+startServer().catch((error) => {
+  console.error('Failed to start PIPFLOW server:', error);
+  process.exitCode = 1;
+});
