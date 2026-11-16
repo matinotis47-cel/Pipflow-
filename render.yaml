@@ -25,6 +25,10 @@ services:
         sync: false
       - key: DERIV_REDIRECT_URI
         sync: false
+      - key: DERIV_OAUTH_URL
+        sync: false
+      - key: DERIV_TOKEN_URL
+        sync: false
       - key: BREVO_API_KEY
         sync: false
       - key: BREVO_SENDER_EMAIL
@@ -36,6 +40,8 @@ services:
       - key: FIREBASE_CLIENT_EMAIL
         sync: false
       - key: FIREBASE_PRIVATE_KEY
+        sync: false
+      - key: TRANSACTION_EVENTS_SECRET
         sync: false
       - key: GEMINI_API_KEY
         sync: false
