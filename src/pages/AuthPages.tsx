@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowLeft, CheckCircle2, Eye, EyeOff, Globe, Lock, Mail, Phone, User } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Eye, EyeOff, Globe, KeyRound, Lock, Mail, Phone, User } from 'lucide-react';
 import { PipflowLogo } from '../components/PipflowLogo';
 import { useAuth } from '../context/AuthContext';
 import { usePlatform } from '../context/PlatformContext';
@@ -14,7 +14,7 @@ interface AuthPagesProps {
 
 export function AuthPages({ route, navigate }: AuthPagesProps) {
   const { config } = usePlatform();
-  const { login, register, loginWithGoogle, user, refreshUserState } = useAuth();
+  const { login, register, loginWithGoogle, loginWithDerivOAuth, loginWithDerivToken, user, refreshUserState } = useAuth();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -27,6 +27,10 @@ export function AuthPages({ route, navigate }: AuthPagesProps) {
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [showDerivPanel, setShowDerivPanel] = useState(false);
+  const [derivToken, setDerivToken] = useState('');
+  const [showDerivToken, setShowDerivToken] = useState(false);
+  const [derivConsent, setDerivConsent] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
@@ -66,6 +70,45 @@ export function AuthPages({ route, navigate }: AuthPagesProps) {
       navigate('/dashboard');
     } catch (err: any) {
       setError(err?.message || 'Google sign-in failed.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDerivTokenLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!derivConsent) {
+      setError('Please confirm authorization consent for read-only Deriv account access.');
+      return;
+    }
+    if (!derivToken.trim()) {
+      setError('Please paste your Deriv API token.');
+      return;
+    }
+    setError('');
+    setLoading(true);
+    try {
+      await loginWithDerivToken(derivToken.trim());
+      navigate('/dashboard');
+    } catch (err: any) {
+      setError(err?.message || 'Deriv API key login failed.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDerivOAuthLogin = async () => {
+    if (!derivConsent) {
+      setError('Please confirm authorization consent for read-only Deriv account access.');
+      return;
+    }
+    setError('');
+    setLoading(true);
+    try {
+      await loginWithDerivOAuth();
+      navigate('/dashboard');
+    } catch (err: any) {
+      setError(err?.message || 'Deriv OAuth login failed.');
     } finally {
       setLoading(false);
     }
@@ -294,6 +337,72 @@ export function AuthPages({ route, navigate }: AuthPagesProps) {
               >
                 Explore Demo Trader Workspace (trader@pipflow.site)
               </button>
+
+              <div className="pt-1 border-t border-slate-200 dark:border-slate-800 space-y-2.5">
+                <label className="flex items-start gap-2 text-[11px] text-slate-600 dark:text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={derivConsent}
+                    onChange={(e) => setDerivConsent(e.target.checked)}
+                    className="mt-0.5 rounded border-slate-300 dark:border-slate-700"
+                  />
+                  <span>
+                    I authorize PIPFLOW for <strong>read-only (`read`)</strong> Deriv account &amp; balance inspection. PIPFLOW never executes real-money external trades.
+                  </span>
+                </label>
+
+                <button
+                  type="button"
+                  onClick={handleDerivOAuthLogin}
+                  disabled={loading}
+                  className="w-full py-2.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white inline-flex items-center justify-center gap-1.5 disabled:opacity-50"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  Continue with Deriv OAuth (Read-Only · Real &amp; Demo)
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowDerivPanel((v) => !v)}
+                  className="w-full py-2 rounded-lg text-xs font-semibold border border-emerald-500/40 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 inline-flex items-center justify-center gap-1.5"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  {showDerivPanel ? 'Hide Deriv API Key Login' : 'Or Log in with Deriv Read-Only Token'}
+                </button>
+
+                {showDerivPanel && (
+                  <form onSubmit={handleDerivTokenLogin} className="space-y-2.5 p-3 rounded-xl bg-slate-50 dark:bg-slate-900/70 border border-slate-200 dark:border-slate-800">
+                    <label className="block text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                      Deriv API Token (Read-Only `read` scope)
+                    </label>
+                    <div className="relative">
+                      <KeyRound className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type={showDerivToken ? 'text' : 'password'}
+                        value={derivToken}
+                        onChange={(e) => setDerivToken(e.target.value)}
+                        placeholder="Paste your Deriv read-only API token"
+                        className="w-full pl-8 pr-9 py-2 text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowDerivToken((s) => !s)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400"
+                        aria-label={showDerivToken ? 'Hide token' : 'Show token'}
+                      >
+                        {showDerivToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={loading}
+                      className="w-full py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold disabled:opacity-50"
+                    >
+                      {loading ? 'Verifying with Deriv...' : 'Connect Read-Only Real & Demo Accounts'}
+                    </button>
+                  </form>
+                )}
+              </div>
 
               <p className="text-center text-xs text-slate-500">
                 New to {config.branding.appName}?{' '}

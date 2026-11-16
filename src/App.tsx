@@ -1,11 +1,16 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { PlatformProvider, usePlatform } from './context/PlatformContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { PublicPages, type PublicRoute } from './pages/PublicPages';
 import { AuthPages, type AuthRoute } from './pages/AuthPages';
 import { DashboardPage } from './pages/DashboardPage';
 import { AdminPage } from './pages/AdminPage';
-import { advanceMarketTick, buildInitialMarketState, type MarketTickState } from './services/marketEngine';
+import {
+  advanceMarketTick,
+  applyLivePriceTick,
+  buildInitialMarketState,
+  type MarketTickState,
+} from './services/marketEngine';
 
 const PUBLIC_ROUTES: PublicRoute[] = [
   '/',
@@ -34,7 +39,7 @@ const AUTH_ROUTES: AuthRoute[] = [
 ];
 
 function AppRouter() {
-  const { config } = usePlatform();
+  const { config, onMarketTick } = usePlatform();
   const { user, loading } = useAuth();
   const [route, setRoute] = useState<string>(() => {
     if (typeof window !== 'undefined') {
@@ -73,6 +78,8 @@ function AppRouter() {
     return initial;
   });
 
+  const lastLiveTickAtRef = useRef<Record<string, number>>({});
+
   useEffect(() => {
     setMarketStates((prev) => {
       const next = { ...prev };
@@ -88,12 +95,30 @@ function AppRouter() {
   }, [config.markets]);
 
   useEffect(() => {
+    const unsub = onMarketTick((tick) => {
+      const asset = config.markets.find((m) => m.symbol === tick.symbol);
+      if (!asset) return;
+      lastLiveTickAtRef.current[tick.symbol] = Date.now();
+      setMarketStates((prev) => {
+        const current = prev[tick.symbol] || buildInitialMarketState(asset);
+        return {
+          ...prev,
+          [tick.symbol]: applyLivePriceTick(current, asset, tick.price, tick.time),
+        };
+      });
+    });
+    return unsub;
+  }, [config.markets, onMarketTick]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => {
+      const now = Date.now();
       setMarketStates((prev) => {
         const next: Record<string, MarketTickState> = {};
         for (const m of config.markets) {
           const current = prev[m.symbol] || buildInitialMarketState(m);
-          next[m.symbol] = advanceMarketTick(current, m);
+          const lastLive = lastLiveTickAtRef.current[m.symbol] || 0;
+          next[m.symbol] = now - lastLive < 3500 ? current : advanceMarketTick(current, m);
         }
         return next;
       });

@@ -130,3 +130,85 @@ export function advanceMarketTick(state: MarketTickState, asset: MarketAsset): M
     ticks,
   };
 }
+
+export function applyLivePriceTick(
+  state: MarketTickState,
+  asset: MarketAsset,
+  livePrice: number,
+  timeMs: number = Date.now()
+): MarketTickState {
+  const prevPrice = state.price;
+  const price = Number(livePrice.toFixed(asset.pipDecimals));
+  const lastDigit = extractLastDigit(price, asset.pipDecimals);
+  const digits = [...state.digits.slice(-999), lastDigit];
+  const ticks = [...state.ticks.slice(-240), { time: timeMs, price }];
+
+  const candles = [...state.candles];
+  const lastCandle = candles[candles.length - 1];
+  if (lastCandle && timeMs - lastCandle.time < 60_000) {
+    candles[candles.length - 1] = {
+      ...lastCandle,
+      high: Math.max(lastCandle.high, price),
+      low: Math.min(lastCandle.low, price),
+      close: price,
+      volume: lastCandle.volume + 3,
+    };
+  } else {
+    candles.push({
+      time: timeMs,
+      open: prevPrice || price,
+      high: Math.max(prevPrice || price, price),
+      low: Math.min(prevPrice || price, price),
+      close: price,
+      volume: 10,
+    });
+    if (candles.length > 140) candles.shift();
+  }
+
+  const base = candles[0]?.open || price || asset.basePrice;
+  const changePct = base > 0 ? ((price - base) / base) * 100 : 0;
+
+  return {
+    symbol: asset.symbol,
+    price,
+    prevPrice,
+    changePct,
+    lastDigit,
+    digits,
+    candles,
+    ticks,
+  };
+}
+
+export function applyHistoricalCandles(
+  state: MarketTickState,
+  asset: MarketAsset,
+  candlesInput: CandleBar[]
+): MarketTickState {
+  if (!candlesInput.length) return state;
+  const candles = candlesInput.map((c) => ({
+    ...c,
+    open: Number(c.open.toFixed(asset.pipDecimals)),
+    high: Number(c.high.toFixed(asset.pipDecimals)),
+    low: Number(c.low.toFixed(asset.pipDecimals)),
+    close: Number(c.close.toFixed(asset.pipDecimals)),
+  }));
+  const latest = candles[candles.length - 1];
+  const first = candles[0];
+  const price = latest.close;
+  const changePct = first.open > 0 ? ((price - first.open) / first.open) * 100 : 0;
+  const ticks = candles.slice(-90).map((c) => ({ time: c.time, price: c.close }));
+  const digits = ticks.map((t) => extractLastDigit(t.price, asset.pipDecimals));
+
+  return {
+    symbol: asset.symbol,
+    price,
+    prevPrice: state.price || price,
+    changePct,
+    lastDigit: extractLastDigit(price, asset.pipDecimals),
+    digits: digits.length ? digits : state.digits,
+    candles,
+    ticks: ticks.length ? ticks : state.ticks,
+  };
+}
+

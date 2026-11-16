@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   ArrowRight,
   BarChart3,
@@ -22,6 +22,7 @@ import {
   X,
 } from 'lucide-react';
 import { PipflowLogo } from '../components/PipflowLogo';
+import { AdminAuthModal } from '../components/AdminAuthModal';
 import { usePlatform } from '../context/PlatformContext';
 import { useAuth } from '../context/AuthContext';
 import type { MarketAsset, MarketCategory } from '../types/pipflow';
@@ -53,8 +54,11 @@ interface PublicPagesProps {
 
 export function PublicPages({ route, navigate, markets, marketStates }: PublicPagesProps) {
   const { config, theme, toggleTheme } = usePlatform();
-  const { user } = useAuth();
+  const { user, adminAuthenticated } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const logoClickCountRef = useRef(0);
+  const logoLastClickRef = useRef(0);
+  const [adminModalOpen, setAdminModalOpen] = useState(false);
 
   const navItems: { label: string; to: PublicRoute }[] = [
     { label: config.website.navLabels.markets || 'Markets', to: '/markets' },
@@ -69,6 +73,28 @@ export function PublicPages({ route, navigate, markets, marketStates }: PublicPa
     navigate(to);
   };
 
+  const handlePublicLogoClick = () => {
+    const now = Date.now();
+    if (now - logoLastClickRef.current > 2000) {
+      logoClickCountRef.current = 1;
+    } else {
+      logoClickCountRef.current += 1;
+    }
+    logoLastClickRef.current = now;
+
+    if (logoClickCountRef.current === 10) {
+      logoClickCountRef.current = 0;
+      if (adminAuthenticated) {
+        navigate('/admin');
+      } else {
+        setAdminModalOpen(true);
+      }
+      return;
+    }
+
+    handleNav('/');
+  };
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-[#080d17] text-slate-900 dark:text-slate-100">
       {/* Announcement Strip */}
@@ -81,7 +107,15 @@ export function PublicPages({ route, navigate, markets, marketStates }: PublicPa
       {/* Clean 3-Zone Top Bar */}
       <header className="sticky top-0 z-30 border-b border-slate-200 dark:border-slate-800/80 bg-white/95 dark:bg-[#0b1220]/95 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
-          <PipflowLogo variant="main" onClick={() => handleNav('/')} />
+          <PipflowLogo variant="main" onClick={handlePublicLogoClick} />
+          <AdminAuthModal
+            open={adminModalOpen}
+            onClose={() => setAdminModalOpen(false)}
+            onSuccess={() => {
+              setAdminModalOpen(false);
+              navigate('/admin');
+            }}
+          />
 
           <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-600 dark:text-slate-300">
             {navItems.map((item) => {

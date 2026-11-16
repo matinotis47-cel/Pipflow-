@@ -2,6 +2,14 @@ import React, { createContext, useContext, useEffect, useState, useCallback } fr
 import { DEFAULT_PLATFORM_CONFIG } from '../config/app.config';
 import type { PlatformConfig, TradingAccount, AppNotification } from '../types/pipflow';
 
+export interface LiveMarketTickEvent {
+  symbol: string;
+  derivSymbol?: string;
+  price: number;
+  quote?: number;
+  time: number;
+}
+
 interface PlatformContextValue {
   config: PlatformConfig;
   theme: 'light' | 'dark';
@@ -11,6 +19,7 @@ interface PlatformContextValue {
   setConfigLocal: (next: PlatformConfig) => void;
   onAccountEvent: (cb: (account: TradingAccount) => void) => () => void;
   onNotificationEvent: (cb: (notif: AppNotification) => void) => () => void;
+  onMarketTick: (cb: (tick: LiveMarketTickEvent) => void) => () => void;
 }
 
 const PlatformContext = createContext<PlatformContextValue | null>(null);
@@ -27,6 +36,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
 
   const [accountListeners] = useState(() => new Set<(acc: TradingAccount) => void>());
   const [notifListeners] = useState(() => new Set<(n: AppNotification) => void>());
+  const [marketTickListeners] = useState(() => new Set<(tick: LiveMarketTickEvent) => void>());
 
   const applyConfigToDocument = useCallback((cfg: PlatformConfig, activeTheme: 'light' | 'dark') => {
     const root = document.documentElement;
@@ -121,10 +131,20 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
         // ignore
       }
     });
+    es.addEventListener('market:tick', (ev) => {
+      try {
+        const parsed = JSON.parse((ev as MessageEvent).data);
+        if (parsed?.symbol && typeof parsed?.price === 'number') {
+          marketTickListeners.forEach((cb) => cb(parsed));
+        }
+      } catch {
+        // ignore
+      }
+    });
     return () => {
       es.close();
     };
-  }, [accountListeners, notifListeners]);
+  }, [accountListeners, notifListeners, marketTickListeners]);
 
   const setTheme = useCallback((next: 'light' | 'dark') => {
     setThemeState(next);
@@ -157,6 +177,16 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
     [notifListeners]
   );
 
+  const onMarketTick = useCallback(
+    (cb: (tick: LiveMarketTickEvent) => void) => {
+      marketTickListeners.add(cb);
+      return () => {
+        marketTickListeners.delete(cb);
+      };
+    },
+    [marketTickListeners]
+  );
+
   return (
     <PlatformContext.Provider
       value={{
@@ -168,6 +198,7 @@ export function PlatformProvider({ children }: { children: React.ReactNode }) {
         setConfigLocal: setConfig,
         onAccountEvent,
         onNotificationEvent,
+        onMarketTick,
       }}
     >
       {children}

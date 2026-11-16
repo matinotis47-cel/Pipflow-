@@ -26,6 +26,14 @@ interface AuthContextValue {
   login: (email: string, password: string) => Promise<void>;
   register: (payload: { email: string; password: string; fullName?: string; country?: string; phone?: string }) => Promise<{ verificationPreviewCode?: string }>;
   loginWithGoogle: () => Promise<void>;
+  loginWithDerivOAuth: () => Promise<{ derivLoginId?: string }>;
+  loginWithDerivToken: (token: string, phone?: string) => Promise<void>;
+  connectDerivToken: (token: string) => Promise<{ derivLoginId: string }>;
+  disconnectDeriv: () => Promise<void>;
+  revokeDeriv: () => Promise<void>;
+  syncDerivBalances: () => Promise<void>;
+  depositFunds: (accountId: string, amount: number, note?: string) => Promise<void>;
+  withdrawFunds: (accountId: string, amount: number, note?: string) => Promise<void>;
   logout: () => Promise<void>;
   switchAccount: (accountId: string) => Promise<void>;
   updateProfile: (data: Partial<UserProfile>) => Promise<void>;
@@ -179,6 +187,140 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await fetchTradingWorkspaceState();
   };
 
+  const loginWithDerivToken = async (token: string, phone?: string) => {
+    const res = await apiFetch('/api/auth/deriv-login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, phone, consentAccepted: true }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Deriv API key login failed');
+    if (data.sessionToken) setMemoryUserToken(data.sessionToken);
+    if (data.user) setUser(data.user);
+    if (data.accounts) setAccounts(data.accounts);
+    await fetchTradingWorkspaceState();
+  };
+
+  const loginWithDerivOAuth = async (): Promise<{ derivLoginId?: string }> => {
+    const redirectUri = `${window.location.origin}/auth/callback`;
+    const res = await apiFetch(`/api/auth/deriv/url?redirect_uri=${encodeURIComponent(redirectUri)}`);
+    const data = await res.json();
+    if (!res.ok || !data?.url) {
+      throw new Error(data?.error || 'Could not initialize Deriv OAuth URL.');
+    }
+
+    const popup = window.open(
+      data.url,
+      'pipflow_deriv_oauth',
+      'width=540,height=700,noopener=false,noreferrer=false'
+    );
+
+    if (!popup) {
+      // Mobile / strict popup blocker fallback: full-page redirect
+      window.location.href = data.url;
+      return {};
+    }
+
+    return new Promise<{ derivLoginId?: string }>((resolve, reject) => {
+      let finished = false;
+      const cleanup = () => {
+        window.removeEventListener('message', onMessage);
+        clearInterval(closeWatch);
+      };
+
+      const onMessage = async (event: MessageEvent) => {
+        const msg = event.data;
+        if (!msg || typeof msg !== 'object') return;
+        if (msg.type === 'DERIV_OAUTH_SUCCESS') {
+          if (finished) return;
+          finished = true;
+          cleanup();
+          if (msg.sessionToken) {
+            setMemoryUserToken(String(msg.sessionToken));
+          }
+          await refreshUserState();
+          resolve({ derivLoginId: msg.derivLoginId });
+        } else if (msg.type === 'DERIV_OAUTH_ERROR') {
+          if (finished) return;
+          finished = true;
+          cleanup();
+          reject(new Error(String(msg.error || 'Deriv OAuth authorization failed.')));
+        }
+      };
+
+      window.addEventListener('message', onMessage);
+
+      const closeWatch = window.setInterval(() => {
+        if (popup.closed && !finished) {
+          finished = true;
+          cleanup();
+          reject(new Error('Deriv authorization window was closed before completion.'));
+        }
+      }, 600);
+    });
+  };
+
+  const connectDerivToken = async (token: string) => {
+    const res = await apiFetch('/api/auth/connect-deriv-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, consentAccepted: true }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not link Deriv API token');
+    if (data.user) setUser(data.user);
+    if (data.accounts) setAccounts(data.accounts);
+    await fetchTradingWorkspaceState();
+    return { derivLoginId: data.derivLoginId };
+  };
+
+  const disconnectDeriv = async () => {
+    const res = await apiFetch('/api/auth/disconnect-deriv', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not disconnect Deriv account');
+    if (data.user) setUser(data.user);
+    if (data.accounts) setAccounts(data.accounts);
+  };
+
+  const revokeDeriv = async () => {
+    const res = await apiFetch('/api/auth/revoke-deriv', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not revoke Deriv authorization');
+    if (data.user) setUser(data.user);
+    if (data.accounts) setAccounts(data.accounts);
+  };
+
+  const syncDerivBalances = async () => {
+    const res = await apiFetch('/api/auth/sync-deriv-balances', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Balance sync failed');
+    if (data.accounts) setAccounts(data.accounts);
+  };
+
+  const depositFunds = async (accountId: string, amount: number, note?: string) => {
+    const res = await apiFetch('/api/trading/deposit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountId, amount, note }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Deposit failed');
+    if (data.account) setAccountBalanceLocal(data.account);
+    await fetchTradingWorkspaceState();
+  };
+
+  const withdrawFunds = async (accountId: string, amount: number, note?: string) => {
+    const res = await apiFetch('/api/trading/withdraw', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountId, amount, note }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Withdrawal failed');
+    if (data.account) setAccountBalanceLocal(data.account);
+    await fetchTradingWorkspaceState();
+  };
+
   const logout = async () => {
     await apiFetch('/api/auth/logout', { method: 'POST' });
     setMemoryUserToken(null);
@@ -273,6 +415,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         login,
         register,
         loginWithGoogle,
+        loginWithDerivOAuth,
+        loginWithDerivToken,
+        connectDerivToken,
+        disconnectDeriv,
+        revokeDeriv,
+        syncDerivBalances,
+        depositFunds,
+        withdrawFunds,
         logout,
         switchAccount,
         updateProfile,

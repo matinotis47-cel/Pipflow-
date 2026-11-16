@@ -45,6 +45,7 @@ import type {
   AdminAuditLog,
   AppNotification,
   ContactSubmission,
+  EmailLogRecord,
   FeatureFlags,
   MarketAsset,
   MarketCategory,
@@ -55,6 +56,20 @@ import type {
   TransactionRecord,
   UserProfile,
 } from '../types/pipflow';
+
+interface AdminDerivConnectionRow {
+  userId: string;
+  email: string;
+  fullName: string;
+  derivLoginId: string;
+  connectionStatus: string;
+  authMode: string;
+  authorizedScopes: string;
+  connectedAt: string;
+  revokedAt: string | null;
+  realAccountsCount: number;
+  demoAccountsCount: number;
+}
 
 type AdminSection =
   | 'overview'
@@ -156,6 +171,12 @@ export function AdminPage({ navigate }: AdminPageProps) {
   const [auditLogs, setAuditLogs] = useState<AdminAuditLog[]>([]);
   const [auditFilter, setAuditFilter] = useState('');
   const [adminNotifications, setAdminNotifications] = useState<AppNotification[]>([]);
+  const [derivConnections, setDerivConnections] = useState<AdminDerivConnectionRow[]>([]);
+  const [emailLogs, setEmailLogs] = useState<EmailLogRecord[]>([]);
+  const [systemStats, setSystemStats] = useState<any>(null);
+  const [diagResult, setDiagResult] = useState<any>(null);
+  const [testEmailAddr, setTestEmailAddr] = useState('');
+  const [notifSendEmail, setNotifSendEmail] = useState(false);
 
   // Editable config drafts
   const [brandingDraft, setBrandingDraft] = useState(config.branding);
@@ -252,17 +273,21 @@ export function AdminPage({ navigate }: AdminPageProps) {
   const fetchAllAdminData = useCallback(async () => {
     if (!adminAuthenticated) return;
     try {
-      const [ovRes, uRes, accRes, trRes, txRes, pnlRes, logRes, secRes, ntfRes] = await Promise.all([
-        apiFetch('/api/admin/overview', { credentials: 'include' }),
-        apiFetch('/api/admin/users', { credentials: 'include' }),
-        apiFetch('/api/admin/demo-accounts', { credentials: 'include' }),
-        apiFetch('/api/admin/trading-activity', { credentials: 'include' }),
-        apiFetch('/api/admin/demo-transactions', { credentials: 'include' }),
-        apiFetch('/api/admin/demo-performance', { credentials: 'include' }),
-        apiFetch('/api/admin/audit-logs', { credentials: 'include' }),
-        apiFetch('/api/admin/session', { credentials: 'include' }),
-        apiFetch('/api/admin/notifications', { credentials: 'include' }),
-      ]);
+      const [ovRes, uRes, accRes, trRes, txRes, pnlRes, logRes, secRes, ntfRes, connRes, emlRes, stRes] =
+        await Promise.all([
+          apiFetch('/api/admin/overview', { credentials: 'include' }),
+          apiFetch('/api/admin/users', { credentials: 'include' }),
+          apiFetch('/api/admin/demo-accounts', { credentials: 'include' }),
+          apiFetch('/api/admin/trading-activity', { credentials: 'include' }),
+          apiFetch('/api/admin/demo-transactions', { credentials: 'include' }),
+          apiFetch('/api/admin/demo-performance', { credentials: 'include' }),
+          apiFetch('/api/admin/audit-logs', { credentials: 'include' }),
+          apiFetch('/api/admin/session', { credentials: 'include' }),
+          apiFetch('/api/admin/notifications', { credentials: 'include' }),
+          apiFetch('/api/admin/connections', { credentials: 'include' }),
+          apiFetch('/api/admin/email-logs', { credentials: 'include' }),
+          apiFetch('/api/admin/stats', { credentials: 'include' }),
+        ]);
 
       if (ovRes.ok) setOverview(await ovRes.json());
       if (uRes.ok) {
@@ -296,6 +321,17 @@ export function AdminPage({ navigate }: AdminPageProps) {
       if (ntfRes.ok) {
         const nData = await ntfRes.json();
         setAdminNotifications(nData.notifications || []);
+      }
+      if (connRes.ok) {
+        const cData = await connRes.json();
+        setDerivConnections(cData.connections || []);
+      }
+      if (emlRes.ok) {
+        const eData = await emlRes.json();
+        setEmailLogs(eData.logs || []);
+      }
+      if (stRes.ok) {
+        setSystemStats(await stRes.json());
       }
     } catch {
       notify('error', 'Failed to refresh administrator data.');
@@ -636,7 +672,12 @@ export function AdminPage({ navigate }: AdminPageProps) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ userId: notifTarget, title: notifTitle.trim(), message: notifMessage.trim() }),
+        body: JSON.stringify({
+          userId: notifTarget,
+          title: notifTitle.trim(),
+          message: notifMessage.trim(),
+          sendEmail: notifSendEmail,
+        }),
       });
       if (!res.ok) throw new Error('Failed to send alert');
       notify('success', `Notification broadcasted to ${notifTarget === 'all' ? 'all traders' : notifTarget}.`);
@@ -645,6 +686,42 @@ export function AdminPage({ navigate }: AdminPageProps) {
       await fetchAllAdminData();
     } catch {
       notify('error', 'Could not deliver notification.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRunDerivDiagnostics = async () => {
+    setBusy(true);
+    try {
+      const res = await apiFetch('/api/admin/diagnostics/deriv', { method: 'POST', credentials: 'include' });
+      const data = await res.json();
+      setDiagResult(data);
+      notify(data.ok ? 'success' : 'error', data.ok ? `Deriv WS feed healthy (${data.latencyMs}ms).` : (data.error || 'Deriv diagnostic warning'));
+      await fetchAllAdminData();
+    } catch {
+      notify('error', 'Could not run Deriv diagnostic check.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSendTestEmail = async () => {
+    const recipient = testEmailAddr.trim() || config.branding.supportEmail;
+    if (!recipient) return notify('error', 'Enter a recipient email address.');
+    setBusy(true);
+    try {
+      const res = await apiFetch('/api/admin/email/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ toEmail: recipient }),
+      });
+      const data = await res.json();
+      notify(data.sent ? 'success' : 'error', data.sent ? `Test email dispatched to ${recipient}.` : `Email status: ${data.reason || 'Skipped'}`);
+      await fetchAllAdminData();
+    } catch {
+      notify('error', 'Failed to send test email.');
     } finally {
       setBusy(false);
     }
@@ -1156,6 +1233,66 @@ export function AdminPage({ navigate }: AdminPageProps) {
                       </td>
                     </tr>
                   ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="rounded-xl bg-white dark:bg-[#0f1724] border border-slate-200 dark:border-slate-800 overflow-x-auto">
+              <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                <div>
+                  <h3 className="text-xs font-bold">Authorized Deriv Connections Monitoring (Read-Only · Zero Credentials)</h3>
+                  <p className="text-[11px] text-slate-500">Displays connection status, granted read scope, and linked account counts without ever exposing user tokens.</p>
+                </div>
+                <span className="text-[11px] font-mono text-slate-400">{derivConnections.length} linked user(s)</span>
+              </div>
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 dark:bg-slate-900/60 border-b border-slate-200 dark:border-slate-800 text-slate-500">
+                  <tr>
+                    <th className="py-2.5 px-4 font-semibold">Trader</th>
+                    <th className="py-2.5 px-4 font-semibold">Deriv ID</th>
+                    <th className="py-2.5 px-4 font-semibold">Status</th>
+                    <th className="py-2.5 px-4 font-semibold">Mode / Scope</th>
+                    <th className="py-2.5 px-4 font-semibold">Real / Demo</th>
+                    <th className="py-2.5 px-4 font-semibold">Last Updated</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {derivConnections.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="py-5 px-4 text-center text-slate-400">
+                        No Deriv read-only authorizations recorded yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    derivConnections.map((c) => (
+                      <tr key={c.userId}>
+                        <td className="py-2.5 px-4">{c.email}</td>
+                        <td className="py-2.5 px-4 font-mono font-semibold">{c.derivLoginId}</td>
+                        <td className="py-2.5 px-4">
+                          <span
+                            className={`px-2 py-0.5 rounded font-semibold uppercase text-[10px] ${
+                              c.connectionStatus === 'connected'
+                                ? 'bg-emerald-500/15 text-emerald-500'
+                                : c.connectionStatus === 'revoked'
+                                  ? 'bg-rose-500/15 text-rose-500'
+                                  : 'bg-slate-200 dark:bg-slate-800 text-slate-500'
+                            }`}
+                          >
+                            {c.connectionStatus}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-4 font-mono text-[11px]">
+                          {c.authMode.toUpperCase()} · {c.authorizedScopes}
+                        </td>
+                        <td className="py-2.5 px-4 font-mono">
+                          {c.realAccountsCount} Real / {c.demoAccountsCount} Demo
+                        </td>
+                        <td className="py-2.5 px-4 text-[11px] text-slate-500">
+                          {new Date(c.revokedAt || c.connectedAt).toLocaleString()}
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -2309,78 +2446,164 @@ export function AdminPage({ navigate }: AdminPageProps) {
           </div>
         )}
 
-        {/* 11. NOTIFICATIONS */}
+        {/* 11. NOTIFICATIONS & EMAIL MANAGEMENT */}
         {section === 'notifications' && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <form onSubmit={handleSendNotification} className="rounded-xl bg-white dark:bg-[#0f1724] border border-slate-200 dark:border-slate-800 p-6 space-y-4">
-              <h2 className="text-sm font-bold">Send Broadcast or Direct Alert</h2>
-              <div>
-                <label className="block text-xs font-medium mb-1">Recipient</label>
-                <select
-                  value={notifTarget}
-                  onChange={(e) => setNotifTarget(e.target.value)}
-                  className="w-full px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
-                >
-                  <option value="all">All Traders (Platform Broadcast)</option>
-                  {users.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.email} ({u.fullName})
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium mb-1">Notification Title</label>
-                <input
-                  type="text"
-                  value={notifTitle}
-                  onChange={(e) => setNotifTitle(e.target.value)}
-                  placeholder="e.g., Synthetic Volatility Schedule Update"
-                  className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium mb-1">Message</label>
-                <textarea
-                  rows={4}
-                  value={notifMessage}
-                  onChange={(e) => setNotifMessage(e.target.value)}
-                  placeholder="Write a clear notice for traders..."
-                  className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
-                />
-              </div>
-              <button type="submit" disabled={busy} className="px-5 py-2.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold">
-                Broadcast Notification
-              </button>
-            </form>
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <form onSubmit={handleSendNotification} className="rounded-xl bg-white dark:bg-[#0f1724] border border-slate-200 dark:border-slate-800 p-6 space-y-4">
+                <h2 className="text-sm font-bold">Send Broadcast or Direct Alert</h2>
+                <div>
+                  <label className="block text-xs font-medium mb-1">Recipient</label>
+                  <select
+                    value={notifTarget}
+                    onChange={(e) => setNotifTarget(e.target.value)}
+                    className="w-full px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
+                  >
+                    <option value="all">All Traders (Platform Broadcast)</option>
+                    {users.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.email} ({u.fullName})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium mb-1">Notification Title</label>
+                  <input
+                    type="text"
+                    value={notifTitle}
+                    onChange={(e) => setNotifTitle(e.target.value)}
+                    placeholder="e.g., Synthetic Volatility Schedule Update"
+                    className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium mb-1">Message</label>
+                  <textarea
+                    rows={4}
+                    value={notifMessage}
+                    onChange={(e) => setNotifMessage(e.target.value)}
+                    placeholder="Write a clear notice for traders..."
+                    className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
+                  />
+                </div>
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={notifSendEmail}
+                    onChange={(e) => setNotifSendEmail(e.target.checked)}
+                  />
+                  Also dispatch via Brevo Email
+                </label>
+                <button type="submit" disabled={busy} className="px-5 py-2.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold">
+                  Broadcast Notification
+                </button>
+              </form>
 
-            <div className="rounded-xl bg-white dark:bg-[#0f1724] border border-slate-200 dark:border-slate-800 p-6 space-y-3">
-              <h2 className="text-sm font-bold">Notification History ({adminNotifications.length})</h2>
-              <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-96 overflow-y-auto">
-                {adminNotifications.map((n) => (
-                  <div key={n.id} className="py-2.5 flex items-start justify-between gap-3 text-xs">
-                    <div className="min-w-0">
-                      <div className="font-semibold text-slate-900 dark:text-white">{n.title}</div>
-                      <p className="text-slate-500 dark:text-slate-400 mt-0.5">{n.message}</p>
-                      <div className="text-[10px] font-mono text-slate-400 mt-1">
-                        Target: {n.userId} · {new Date(n.createdAt).toLocaleString()}
+              <div className="rounded-xl bg-white dark:bg-[#0f1724] border border-slate-200 dark:border-slate-800 p-6 space-y-3">
+                <h2 className="text-sm font-bold">Notification History ({adminNotifications.length})</h2>
+                <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-96 overflow-y-auto">
+                  {adminNotifications.map((n) => (
+                    <div key={n.id} className="py-2.5 flex items-start justify-between gap-3 text-xs">
+                      <div className="min-w-0">
+                        <div className="font-semibold text-slate-900 dark:text-white">{n.title}</div>
+                        <p className="text-slate-500 dark:text-slate-400 mt-0.5">{n.message}</p>
+                        <div className="text-[10px] font-mono text-slate-400 mt-1">
+                          Target: {n.userId} · {new Date(n.createdAt).toLocaleString()}
+                        </div>
                       </div>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const res = await apiFetch(`/api/admin/notifications/${n.id}`, { method: 'DELETE' });
+                          if (res.ok) {
+                            notify('success', 'Notification deleted.');
+                            await fetchAllAdminData();
+                          }
+                        }}
+                        className="p-1.5 text-rose-500 hover:bg-rose-500/10 rounded shrink-0"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const res = await apiFetch(`/api/admin/notifications/${n.id}`, { method: 'DELETE' });
-                        if (res.ok) {
-                          notify('success', 'Notification deleted.');
-                          await fetchAllAdminData();
-                        }
-                      }}
-                      className="p-1.5 text-rose-500 hover:bg-rose-500/10 rounded shrink-0"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                ))}
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl bg-white dark:bg-[#0f1724] border border-slate-200 dark:border-slate-800 p-6 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-bold">Brevo Transactional Email Management &amp; Delivery Logs</h2>
+                  <p className="text-xs text-slate-500">
+                    Provider Status:{' '}
+                    <span className={systemStats?.brevoConfigured ? 'text-emerald-500 font-semibold' : 'text-amber-500 font-semibold'}>
+                      {systemStats?.brevoConfigured ? 'BREVO_API_KEY Active' : 'BREVO_API_KEY Not Configured (Logging Locally)'}
+                    </span>
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="email"
+                    value={testEmailAddr}
+                    onChange={(e) => setTestEmailAddr(e.target.value)}
+                    placeholder={config.branding.supportEmail || 'recipient@example.com'}
+                    className="px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
+                  />
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void handleSendTestEmail()}
+                    className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold"
+                  >
+                    Send Test Email
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto max-h-72 overflow-y-auto border border-slate-200 dark:border-slate-800 rounded-lg">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 dark:bg-slate-900/60 border-b border-slate-200 dark:border-slate-800 text-slate-500">
+                    <tr>
+                      <th className="py-2 px-3">Recipient</th>
+                      <th className="py-2 px-3">Type</th>
+                      <th className="py-2 px-3">Subject</th>
+                      <th className="py-2 px-3">Status</th>
+                      <th className="py-2 px-3">Timestamp</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {emailLogs.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="py-4 px-3 text-center text-slate-400">
+                          No email deliveries recorded yet.
+                        </td>
+                      </tr>
+                    ) : (
+                      emailLogs.slice(0, 50).map((el) => (
+                        <tr key={el.id}>
+                          <td className="py-2 px-3 font-mono">{el.recipientEmail}</td>
+                          <td className="py-2 px-3 uppercase text-[10px] font-semibold">{el.emailType}</td>
+                          <td className="py-2 px-3">{el.subject}</td>
+                          <td className="py-2 px-3">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
+                                el.status === 'sent'
+                                  ? 'bg-emerald-500/15 text-emerald-500'
+                                  : el.status === 'skipped'
+                                    ? 'bg-amber-500/15 text-amber-500'
+                                    : 'bg-rose-500/15 text-rose-500'
+                              }`}
+                            >
+                              {el.status}
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 text-[11px] text-slate-500">{new Date(el.createdAt).toLocaleString()}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
@@ -2500,6 +2723,57 @@ export function AdminPage({ navigate }: AdminPageProps) {
             >
               Save Platform Settings
             </button>
+
+            <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-xs font-bold">API Connection Diagnostics</h3>
+                  <p className="text-[11px] text-slate-500">Live telemetry for Deriv WS Public Market Feed, Neon PostgreSQL, and Brevo SMTP.</p>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleRunDerivDiagnostics()}
+                  className="px-3 py-1.5 rounded-lg border border-sky-500/40 text-sky-600 dark:text-sky-400 hover:bg-sky-500/10 text-xs font-semibold inline-flex items-center gap-1.5"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" /> Run Live Deriv Diagnostic
+                </button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                  <div className="text-slate-500 text-[11px]">Deriv WS Feed</div>
+                  <div className="font-mono font-bold mt-0.5 uppercase">
+                    {diagResult?.diagnostics?.status || systemStats?.derivFeed?.status || 'connecting'}
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-1">
+                    Instruments: {diagResult?.instrumentCount ?? systemStats?.derivFeed?.instrumentCount ?? 0} · Reconnects:{' '}
+                    {systemStats?.derivFeed?.reconnectCount ?? 0}
+                  </div>
+                </div>
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                  <div className="text-slate-500 text-[11px]">Neon PostgreSQL</div>
+                  <div className="font-mono font-bold mt-0.5 uppercase">
+                    {systemStats?.neonStatus?.connected ? 'Connected' : systemStats?.neonStatus?.configured ? 'Configured' : 'Local Fallback'}
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-1">11 Normalized Tables Active</div>
+                </div>
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                  <div className="text-slate-500 text-[11px]">Brevo Email Engine</div>
+                  <div className="font-mono font-bold mt-0.5 uppercase">
+                    {systemStats?.brevoConfigured ? 'Active' : 'Unconfigured'}
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-1">
+                    Logs Recorded: {systemStats?.emailLogCount ?? emailLogs.length}
+                  </div>
+                </div>
+              </div>
+              {diagResult && (
+                <div className="text-[11px] font-mono p-2.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                  Last Ping: {diagResult.ok ? `OK (${diagResult.latencyMs}ms)` : `Issue: ${diagResult.error || 'Disconnected'}`} · App ID:{' '}
+                  {diagResult.diagnostics?.appId}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -2555,55 +2829,64 @@ export function AdminPage({ navigate }: AdminPageProps) {
 
         {/* 15. SECURITY SETTINGS */}
         {section === 'security' && (
-          <form onSubmit={handleSaveSecurity} className="max-w-lg rounded-xl bg-white dark:bg-[#0f1724] border border-slate-200 dark:border-slate-800 p-6 space-y-4">
-            <div className="flex items-center gap-2 text-sm font-semibold">
-              <ShieldCheck className="w-4 h-4 text-sky-500" />
-              Administrator Credential & Session Policy
-            </div>
-            <div>
-              <label className="block text-xs font-medium mb-1">Admin Session Duration (Hours, 1–72)</label>
-              <input
-                type="number"
-                min={1}
-                max={72}
-                value={ttlHours}
-                onChange={(e) => setTtlHours(Number(e.target.value))}
-                className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium mb-1">Rotate Administrator Password (Optional)</label>
-              <div className="relative">
+          <div className="space-y-6 max-w-2xl">
+            <form onSubmit={handleSaveSecurity} className="rounded-xl bg-white dark:bg-[#0f1724] border border-slate-200 dark:border-slate-800 p-6 space-y-4">
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                <ShieldCheck className="w-4 h-4 text-sky-500" />
+                Administrator Credential & Session Policy
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1">Admin Session Duration (Hours, 1–72)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={72}
+                  value={ttlHours}
+                  onChange={(e) => setTtlHours(Number(e.target.value))}
+                  className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1">Rotate Administrator Password (Optional)</label>
+                <div className="relative">
+                  <input
+                    type={showAdminSecPw ? 'text' : 'password'}
+                    value={newAdminPassword}
+                    onChange={(e) => setNewAdminPassword(e.target.value)}
+                    placeholder="Min 8 characters"
+                    className="w-full px-3 pr-10 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowAdminSecPw((s) => !s)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400"
+                  >
+                    {showAdminSecPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1">Confirm New Administrator Password</label>
                 <input
                   type={showAdminSecPw ? 'text' : 'password'}
-                  value={newAdminPassword}
-                  onChange={(e) => setNewAdminPassword(e.target.value)}
-                  placeholder="Min 8 characters"
-                  className="w-full px-3 pr-10 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
+                  value={confirmAdminPassword}
+                  onChange={(e) => setConfirmAdminPassword(e.target.value)}
+                  placeholder="Re-enter new password"
+                  className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowAdminSecPw((s) => !s)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400"
-                >
-                  {showAdminSecPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
               </div>
+              <button type="submit" disabled={busy} className="px-5 py-2.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold">
+                Update Security Settings
+              </button>
+            </form>
+
+            <div className="rounded-xl bg-white dark:bg-[#0f1724] border border-slate-200 dark:border-slate-800 p-6 space-y-2 text-xs">
+              <div className="font-bold text-slate-900 dark:text-white">Read-Only Broker Credential Policy</div>
+              <p className="text-slate-500">
+                PIPFLOW enforces strict <code className="font-mono">scope=read</code> OAuth authorization. Administrators can inspect connection status, audit logs, and API diagnostics above, but cannot view, decrypt, or export user API tokens, passwords, or execute trades on external accounts.
+              </p>
             </div>
-            <div>
-              <label className="block text-xs font-medium mb-1">Confirm New Administrator Password</label>
-              <input
-                type={showAdminSecPw ? 'text' : 'password'}
-                value={confirmAdminPassword}
-                onChange={(e) => setConfirmAdminPassword(e.target.value)}
-                placeholder="Re-enter new password"
-                className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
-              />
-            </div>
-            <button type="submit" disabled={busy} className="px-5 py-2.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold">
-              Update Security Settings
-            </button>
-          </form>
+          </div>
         )}
       </main>
 

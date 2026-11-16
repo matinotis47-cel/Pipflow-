@@ -1,13 +1,19 @@
 import React, { useState } from 'react';
 import {
   Activity,
+  ArrowDownLeft,
+  ArrowUpRight,
+  Bell,
   Bot,
   Calculator,
   CheckCircle2,
   ClipboardList,
   Copy,
+  Eye,
+  EyeOff,
   FileText,
   FolderOpen,
+  KeyRound,
   LayoutGrid,
   LineChart,
   List,
@@ -31,6 +37,8 @@ import {
 import type { MarketAsset, TradeRecord, TradingAccount, TransactionRecord } from '../../types/pipflow';
 import type { MarketTickState } from '../../services/marketEngine';
 import { TradingChart } from '../TradingChart';
+import { PWAInstallButton } from '../PWAInstallButton';
+import { useAndroidPush } from '../../hooks/useAndroidPush';
 import { formatCurrencyAmount, getInitialsFromEmail } from '../../config/app.config';
 import { useAuth } from '../../context/AuthContext';
 import { usePlatform } from '../../context/PlatformContext';
@@ -1594,8 +1602,12 @@ export function ReportsView({
   const totalStake = accountTrades.reduce((s, t) => s + t.stake, 0);
   const bestTrade = closed.length ? Math.max(...closed.map((t) => t.profitLoss)) : 0;
   const worstTrade = closed.length ? Math.min(...closed.map((t) => t.profitLoss)) : 0;
-  const credits = accountTxs.filter((tx) => tx.type === 'credit').reduce((s, tx) => s + tx.amount, 0);
-  const debits = accountTxs.filter((tx) => tx.type === 'debit').reduce((s, tx) => s + Math.abs(tx.amount), 0);
+  const credits = accountTxs
+    .filter((tx) => tx.type === 'credit' || tx.type === 'deposit')
+    .reduce((s, tx) => s + tx.amount, 0);
+  const debits = accountTxs
+    .filter((tx) => tx.type === 'debit' || tx.type === 'withdrawal')
+    .reduce((s, tx) => s + Math.abs(tx.amount), 0);
 
   return (
     <div className="space-y-4">
@@ -2162,23 +2174,180 @@ export function PTraderView({
 }
 
 export function ProfileSettingsView({ navigate }: { navigate: (to: string) => void }) {
-  const { user, updateProfile, activeAccount } = useAuth();
+  const {
+    user,
+    accounts,
+    updateProfile,
+    activeAccount,
+    loginWithDerivOAuth,
+    connectDerivToken,
+    disconnectDeriv,
+    revokeDeriv,
+    syncDerivBalances,
+    depositFunds,
+    withdrawFunds,
+  } = useAuth();
   const { theme, setTheme } = usePlatform();
+  const {
+    pushSupported,
+    permission,
+    subscribed,
+    busy: pushBusy,
+    error: pushError,
+    enableAndroidPush,
+    disableAndroidPush,
+    sendTestPush,
+  } = useAndroidPush();
+
   const [fullName, setFullName] = useState(user?.fullName || '');
   const [country, setCountry] = useState(user?.country || '');
   const [phone, setPhone] = useState(user?.phone || '');
   const [currency, setCurrency] = useState<'USD' | 'KSH' | 'EUR' | 'GBP'>(user?.preferredCurrency || 'USD');
   const [saved, setSaved] = useState('');
 
+  // Deriv API Token link state
+  const [derivTokenInput, setDerivTokenInput] = useState('');
+  const [showDerivInput, setShowDerivInput] = useState(false);
+  const [derivConsent, setDerivConsent] = useState(false);
+  const [derivStatusMsg, setDerivStatusMsg] = useState('');
+  const [derivErr, setDerivErr] = useState('');
+  const [derivBusy, setDerivBusy] = useState(false);
+
+  // Cashier Deposit / Withdrawal state
+  const [cashierAccountId, setCashierAccountId] = useState(activeAccount?.accountId || accounts[0]?.accountId || '');
+  const [cashierAmount, setCashierAmount] = useState('50');
+  const [cashierNote, setCashierNote] = useState('');
+  const [cashierMsg, setCashierMsg] = useState('');
+  const [cashierErr, setCashierErr] = useState('');
+  const [cashierBusy, setCashierBusy] = useState(false);
+
+  // Push test feedback
+  const [pushMsg, setPushMsg] = useState('');
+
   if (!user) return null;
 
   const initials = getInitialsFromEmail(user.email, user.fullName);
+  const effectiveCashierAccount =
+    accounts.find((a) => a.accountId === cashierAccountId)?.accountId ||
+    activeAccount?.accountId ||
+    accounts[0]?.accountId ||
+    '';
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     await updateProfile({ fullName, country, phone, preferredCurrency: currency, preferredTheme: theme });
     setSaved('Profile & workspace settings saved.');
     setTimeout(() => setSaved(''), 3000);
+  };
+
+  const handleConnectDeriv = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!derivConsent) {
+      setDerivErr('Please check the authorization consent box to allow read-only Deriv inspection.');
+      return;
+    }
+    if (!derivTokenInput.trim()) return;
+    setDerivErr('');
+    setDerivStatusMsg('');
+    setDerivBusy(true);
+    try {
+      const res = await connectDerivToken(derivTokenInput.trim());
+      setDerivTokenInput('');
+      setDerivStatusMsg(`Connected Deriv read-only account ${res.derivLoginId} and synced Real & Demo balances.`);
+    } catch (err: any) {
+      setDerivErr(err?.message || 'Failed to connect Deriv API token.');
+    } finally {
+      setDerivBusy(false);
+    }
+  };
+
+  const handleSyncDeriv = async () => {
+    setDerivErr('');
+    setDerivStatusMsg('');
+    setDerivBusy(true);
+    try {
+      await syncDerivBalances();
+      setDerivStatusMsg('Refreshed read-only balances from Deriv API.');
+    } catch (err: any) {
+      setDerivErr(err?.message || 'Failed to sync balances.');
+    } finally {
+      setDerivBusy(false);
+    }
+  };
+
+  const handleConnectDerivOAuth = async () => {
+    if (!derivConsent) {
+      setDerivErr('Please check the authorization consent box before authorizing via Deriv OAuth.');
+      return;
+    }
+    setDerivErr('');
+    setDerivStatusMsg('');
+    setDerivBusy(true);
+    try {
+      const res = await loginWithDerivOAuth();
+      setDerivStatusMsg(
+        res?.derivLoginId
+          ? `Authorized Deriv OAuth read-only (${res.derivLoginId}) and synced Real & Demo accounts.`
+          : 'Deriv OAuth connection completed.'
+      );
+    } catch (err: any) {
+      setDerivErr(err?.message || 'Deriv OAuth connection failed.');
+    } finally {
+      setDerivBusy(false);
+    }
+  };
+
+  const handleDisconnectDeriv = async () => {
+    setDerivErr('');
+    setDerivStatusMsg('');
+    setDerivBusy(true);
+    try {
+      await disconnectDeriv();
+      setDerivStatusMsg('Disconnected Deriv account and cleared local session tokens.');
+    } catch (err: any) {
+      setDerivErr(err?.message || 'Failed to disconnect Deriv account.');
+    } finally {
+      setDerivBusy(false);
+    }
+  };
+
+  const handleRevokeDeriv = async () => {
+    setDerivErr('');
+    setDerivStatusMsg('');
+    setDerivBusy(true);
+    try {
+      await revokeDeriv();
+      setDerivStatusMsg('Revoked Deriv authorization and permanently purged encrypted credentials.');
+    } catch (err: any) {
+      setDerivErr(err?.message || 'Failed to revoke Deriv authorization.');
+    } finally {
+      setDerivBusy(false);
+    }
+  };
+
+  const handleCashierAction = async (kind: 'deposit' | 'withdraw') => {
+    const amt = Number(cashierAmount);
+    if (!effectiveCashierAccount || !Number.isFinite(amt) || amt <= 0) {
+      setCashierErr('Enter a valid amount greater than 0.');
+      return;
+    }
+    setCashierErr('');
+    setCashierMsg('');
+    setCashierBusy(true);
+    try {
+      if (kind === 'deposit') {
+        await depositFunds(effectiveCashierAccount, amt, cashierNote.trim() || undefined);
+        setCashierMsg(`Deposited ${amt.toFixed(2)} to ${effectiveCashierAccount}. Android & Brevo email alerts dispatched.`);
+      } else {
+        await withdrawFunds(effectiveCashierAccount, amt, cashierNote.trim() || undefined);
+        setCashierMsg(`Withdrew ${amt.toFixed(2)} from ${effectiveCashierAccount}. Android & Brevo email alerts dispatched.`);
+      }
+      setCashierNote('');
+    } catch (err: any) {
+      setCashierErr(err?.message || 'Transaction failed.');
+    } finally {
+      setCashierBusy(false);
+    }
   };
 
   return (
@@ -2190,7 +2359,7 @@ export function ProfileSettingsView({ navigate }: { navigate: (to: string) => vo
         <div className="min-w-0 flex-1">
           <h2 className="font-display font-bold text-lg truncate">{user.fullName || user.email}</h2>
           <div className="text-xs text-slate-500 truncate">{user.email}</div>
-          <div className="flex items-center gap-3 mt-1 text-xs">
+          <div className="flex flex-wrap items-center gap-3 mt-1 text-xs">
             <span className={user.emailVerified ? 'text-emerald-500 font-semibold' : 'text-amber-500 font-semibold'}>
               {user.emailVerified ? 'Email Verified' : 'Email Unverified'}
             </span>
@@ -2277,6 +2446,307 @@ export function ProfileSettingsView({ navigate }: { navigate: (to: string) => vo
           </button>
         </div>
       </form>
+
+      {/* Deriv Account Connection (Read-Only Real CR & Demo VRTC Accounts) */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1724] p-6 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="font-display font-bold text-base flex items-center gap-2">
+              <KeyRound className="w-4 h-4 text-emerald-500" /> Deriv Account Connection (Read-Only)
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Authorize official read-only (`read` scope) access to inspect your Real &amp; Demo Deriv accounts and balances. No external orders are ever placed.
+            </p>
+          </div>
+          <span
+            className={`px-2.5 py-1 rounded-full font-mono text-[11px] font-bold uppercase ${
+              user.derivConnected && user.derivConnectionStatus !== 'disconnected' && user.derivConnectionStatus !== 'revoked'
+                ? 'bg-emerald-500/15 text-emerald-500'
+                : user.derivConnectionStatus === 'revoked'
+                  ? 'bg-rose-500/15 text-rose-500'
+                  : 'bg-slate-200 dark:bg-slate-800 text-slate-500'
+            }`}
+          >
+            {user.derivConnected
+              ? `Connected: ${user.derivLoginId}`
+              : user.derivConnectionStatus === 'revoked'
+                ? 'Authorization Revoked'
+                : 'Disconnected'}
+          </span>
+        </div>
+
+        {user.derivConnected && (
+          <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 p-3 space-y-2 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+              <span>
+                Identifier: <strong className="font-mono text-slate-800 dark:text-slate-200">{user.derivLoginId}</strong> · Mode:{' '}
+                <strong className="uppercase">{user.derivAuthMode || 'oauth'}</strong> · Scope:{' '}
+                <strong className="font-mono text-emerald-500">{user.derivAuthorizedScopes || 'read'}</strong>
+              </span>
+              {user.derivConnectedAt && (
+                <span>Authorized {new Date(user.derivConnectedAt).toLocaleString()}</span>
+              )}
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {accounts
+                .filter((a) => a.isLiveSynced || a.externalAccountId)
+                .map((acc) => (
+                  <div
+                    key={acc.accountId}
+                    className="flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0b1120] px-3 py-2"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
+                          acc.accountType === 'real'
+                            ? 'bg-emerald-500/15 text-emerald-500'
+                            : 'bg-amber-500/15 text-amber-500'
+                        }`}
+                      >
+                        {acc.accountType === 'real' ? 'REAL' : 'DEMO'}
+                      </span>
+                      <span className="font-mono font-semibold">{acc.accountId}</span>
+                    </div>
+                    <span className="font-mono font-bold">
+                      {acc.balance.toFixed(2)} {acc.currency}
+                    </span>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
+
+        {derivStatusMsg && (
+          <div className="p-2.5 rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-xs font-medium">
+            {derivStatusMsg}
+          </div>
+        )}
+        {derivErr && (
+          <div className="p-2.5 rounded-lg bg-rose-500/15 text-rose-500 text-xs font-medium">{derivErr}</div>
+        )}
+
+        <label className="flex items-start gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={derivConsent}
+            onChange={(e) => setDerivConsent(e.target.checked)}
+            className="mt-0.5 rounded border-slate-300 dark:border-slate-700"
+          />
+          <span>
+            I explicitly authorize PIPFLOW to access my Deriv account identifiers, account types, currencies, and balances in <strong>read-only mode</strong>. Credentials are encrypted server-side and never shared.
+          </span>
+        </label>
+
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            onClick={handleConnectDerivOAuth}
+            disabled={derivBusy}
+            className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-50"
+          >
+            <KeyRound className="w-3.5 h-3.5" />
+            {user.derivConnected ? 'Re-authorize via Deriv OAuth' : 'Connect via Deriv OAuth 2.0 (Read-Only)'}
+          </button>
+          {user.derivConnected && (
+            <>
+              <button
+                type="button"
+                onClick={handleSyncDeriv}
+                disabled={derivBusy}
+                className="px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold inline-flex items-center justify-center gap-1.5"
+              >
+                <RefreshCw className="w-3.5 h-3.5" /> Sync Balances
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDisconnectDeriv()}
+                disabled={derivBusy}
+                className="px-3.5 py-2 rounded-lg border border-amber-500/40 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 text-xs font-semibold"
+              >
+                Disconnect Account
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleRevokeDeriv()}
+                disabled={derivBusy}
+                className="px-3.5 py-2 rounded-lg border border-rose-500/40 text-rose-500 hover:bg-rose-500/10 text-xs font-semibold"
+              >
+                Revoke Authorization
+              </button>
+            </>
+          )}
+        </div>
+
+        <form onSubmit={handleConnectDeriv} className="flex flex-col sm:flex-row gap-2.5">
+          <div className="relative flex-1">
+            <input
+              type={showDerivInput ? 'text' : 'password'}
+              value={derivTokenInput}
+              onChange={(e) => setDerivTokenInput(e.target.value)}
+              placeholder={user.derivConnected ? 'Paste new read-only Deriv token to update' : 'Paste Deriv API token (Read-Only `read` scope)'}
+              className="w-full pr-9 pl-3 py-2 text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent"
+            />
+            <button
+              type="button"
+              onClick={() => setShowDerivInput((s) => !s)}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400"
+              aria-label={showDerivInput ? 'Hide API token' : 'Show API token'}
+            >
+              {showDerivInput ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+            </button>
+          </div>
+          <button
+            type="submit"
+            disabled={derivBusy || !derivTokenInput.trim()}
+            className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold disabled:opacity-50"
+          >
+            {derivBusy ? 'Connecting...' : 'Connect & Sync'}
+          </button>
+        </form>
+      </div>
+
+      {/* Cashier — Deposit & Withdrawal with Android Push + Brevo Email Alerts */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1724] p-6 space-y-4">
+        <div>
+          <h3 className="font-display font-bold text-base">Cashier — Deposits &amp; Withdrawals</h3>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Every deposit and withdrawal dispatches real Android push notifications and Brevo email receipts.
+          </p>
+        </div>
+
+        {cashierMsg && (
+          <div className="p-2.5 rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-xs font-medium">
+            {cashierMsg}
+          </div>
+        )}
+        {cashierErr && (
+          <div className="p-2.5 rounded-lg bg-rose-500/15 text-rose-500 text-xs font-medium">{cashierErr}</div>
+        )}
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+          <div>
+            <label className="block text-slate-500 mb-1">Account</label>
+            <select
+              value={effectiveCashierAccount}
+              onChange={(e) => setCashierAccountId(e.target.value)}
+              className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 font-mono"
+            >
+              {accounts.map((acc) => (
+                <option key={acc.accountId} value={acc.accountId}>
+                  {acc.accountId} ({acc.accountType.toUpperCase()} · {acc.balance.toFixed(2)} {acc.currency})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-slate-500 mb-1">Amount</label>
+            <input
+              type="number"
+              min="1"
+              step="0.01"
+              value={cashierAmount}
+              onChange={(e) => setCashierAmount(e.target.value)}
+              className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent px-3 py-2 font-mono"
+            />
+          </div>
+          <div>
+            <label className="block text-slate-500 mb-1">Reference Note (optional)</label>
+            <input
+              value={cashierNote}
+              onChange={(e) => setCashierNote(e.target.value)}
+              placeholder="M-Pesa / Card / Bank ref"
+              className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent px-3 py-2"
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2.5">
+          <button
+            type="button"
+            disabled={cashierBusy}
+            onClick={() => void handleCashierAction('deposit')}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold disabled:opacity-50"
+          >
+            <ArrowDownLeft className="w-3.5 h-3.5" /> Deposit Funds
+          </button>
+          <button
+            type="button"
+            disabled={cashierBusy}
+            onClick={() => void handleCashierAction('withdraw')}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-rose-500/40 text-rose-500 hover:bg-rose-500/10 text-xs font-semibold disabled:opacity-50"
+          >
+            <ArrowUpRight className="w-3.5 h-3.5" /> Withdraw Funds
+          </button>
+        </div>
+      </div>
+
+      {/* Android PWA App & Real-Time Web Push Alerts */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1724] p-6 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="font-display font-bold text-base flex items-center gap-2">
+              <Bell className="w-4 h-4 text-sky-500" /> Android App &amp; Real-Time Push Alerts
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Install PIPFLOW on Android and receive instant OS notifications for deposits, withdrawals, and live orders.
+            </p>
+          </div>
+          <PWAInstallButton />
+        </div>
+
+        {pushMsg && (
+          <div className="p-2.5 rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-xs font-medium">
+            {pushMsg}
+          </div>
+        )}
+        {pushError && (
+          <div className="p-2.5 rounded-lg bg-rose-500/15 text-rose-500 text-xs font-medium">{pushError}</div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2.5 text-xs">
+          {!subscribed ? (
+            <button
+              type="button"
+              disabled={pushBusy || !pushSupported}
+              onClick={async () => {
+                const ok = await enableAndroidPush();
+                if (ok) setPushMsg('Android & Browser Push Alerts enabled for this device.');
+              }}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-semibold disabled:opacity-50"
+            >
+              <Bell className="w-3.5 h-3.5" />
+              {pushBusy ? 'Enabling...' : 'Enable Android Push Notifications'}
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                disabled={pushBusy}
+                onClick={async () => {
+                  const res = await sendTestPush(true);
+                  setPushMsg(
+                    `Test alert sent to ${res.pushSent} device(s)${res.emailSent ? ' + Brevo email sent' : ''}.`
+                  );
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold disabled:opacity-50"
+              >
+                Send Test Android &amp; Email Alert
+              </button>
+              <button
+                type="button"
+                disabled={pushBusy}
+                onClick={() => void disableAndroidPush()}
+                className="px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-rose-500 font-semibold"
+              >
+                Disable Device Push
+              </button>
+            </>
+          )}
+          <span className="text-[11px] font-mono text-slate-500">
+            Permission: {permission} {subscribed ? '· Subscribed' : ''}
+          </span>
+        </div>
+      </div>
     </div>
   );
 }

@@ -137,21 +137,44 @@ export interface UserProfile {
   preferredCurrency: 'USD' | 'KSH' | 'EUR' | 'GBP';
   preferredLanguage: string;
   activeAccountId: string;
+  derivConnected?: boolean;
+  derivLoginId?: string;
+  derivConnectionStatus?: 'connected' | 'disconnected' | 'revoked';
+  derivAuthMode?: 'oauth' | 'pat' | 'token';
+  derivAuthorizedScopes?: string;
+  derivConnectedAt?: string;
+  derivRevokedAt?: string;
+  pushEnabled?: boolean;
   createdAt: string;
   updatedAt: string;
 }
 
+export interface EmailLogRecord {
+  id: string;
+  recipientEmail: string;
+  emailType: string;
+  subject: string;
+  status: 'sent' | 'failed' | 'skipped';
+  providerMessageId?: string;
+  errorReason?: string;
+  createdAt: string;
+}
+
 export interface TradingAccount {
-  accountId: string; // ROT... for real, DOT... for demo
+  accountId: string; // ROT... / CR... for real, DOT... / VRTC... for demo
   userId: string;
   accountType: AccountType;
   currency: 'USD' | 'KSH' | 'EUR' | 'GBP';
   balance: number;
   startingBalance: number;
   status: 'active' | 'frozen';
+  externalAccountId?: string;
+  isLiveSynced?: boolean;
   createdAt: string;
   updatedAt: string;
 }
+
+export type MT5OrderType = 'MARKET' | 'BUY_LIMIT' | 'SELL_LIMIT' | 'BUY_STOP' | 'SELL_STOP';
 
 export interface TradeRecord {
   id: string;
@@ -161,13 +184,23 @@ export interface TradeRecord {
   symbol: string;
   tradeType: string;
   direction: 'BUY' | 'SELL' | 'RISE' | 'FALL' | 'EVEN' | 'ODD' | 'OVER' | 'UNDER' | 'ACCU';
+  orderType?: MT5OrderType;
+  lotSize?: number;
   stake: number;
   entryPrice: number;
+  stopLoss?: number;
+  takeProfit?: number;
   exitPrice?: number;
   payout: number;
   profitLoss: number;
-  status: 'open' | 'closed';
-  source: 'manual' | 'bot' | 'ai_profit_bot' | 'bulk' | 'copy';
+  commission?: number;
+  swap?: number;
+  closeReason?: 'manual' | 'sl' | 'tp' | 'expired';
+  status: 'open' | 'pending' | 'closed';
+  source: 'manual' | 'bot' | 'ai_profit_bot' | 'bulk' | 'copy' | 'analysis_auto';
+  externalContractId?: string;
+  commissionEstimate?: number;
+  liveExecution?: boolean;
   note?: string;
   openedAt: string;
   closedAt?: string;
@@ -178,7 +211,7 @@ export interface TransactionRecord {
   userId: string;
   accountId: string;
   accountType: AccountType;
-  type: 'credit' | 'debit' | 'reset' | 'trade_win' | 'trade_loss' | 'pnl_adjustment' | 'transfer';
+  type: 'credit' | 'debit' | 'reset' | 'trade_win' | 'trade_loss' | 'pnl_adjustment' | 'transfer' | 'deposit' | 'withdrawal';
   amount: number;
   balanceAfter: number;
   reason: string;
@@ -218,7 +251,21 @@ export interface AdminAuditLog {
   id: string;
   action: string;
   actor: string;
-  targetType: 'auth' | 'user' | 'account' | 'balance' | 'pnl' | 'branding' | 'logo' | 'settings' | 'features' | 'markets' | 'notification';
+  targetType:
+    | 'auth'
+    | 'user'
+    | 'account'
+    | 'balance'
+    | 'pnl'
+    | 'branding'
+    | 'logo'
+    | 'settings'
+    | 'features'
+    | 'markets'
+    | 'notification'
+    | 'push'
+    | 'email'
+    | 'broker';
   targetId?: string;
   details: string;
   ip?: string;

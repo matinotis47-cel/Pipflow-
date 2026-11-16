@@ -39,8 +39,10 @@ import {
   Zap,
 } from 'lucide-react';
 import { PipflowLogo } from '../components/PipflowLogo';
+import { PWAInstallButton } from '../components/PWAInstallButton';
 import { AdminAuthModal } from '../components/AdminAuthModal';
 import { TradingChart } from '../components/TradingChart';
+import { MT5TradingView } from '../components/workspace/MT5TradingView';
 import { AiProfitBotDrawer } from '../components/AiProfitBotDrawer';
 import {
   AnalysisToolView,
@@ -58,7 +60,7 @@ import { usePlatform } from '../context/PlatformContext';
 import { formatCurrencyAmount, getInitialsFromEmail } from '../config/app.config';
 import { apiFetch } from '../lib/sessionMemory';
 import type { MarketAsset, TradeRecord } from '../types/pipflow';
-import type { MarketTickState } from '../services/marketEngine';
+import type { CandleBar, MarketTickState } from '../services/marketEngine';
 
 type WorkspaceTabId =
   | 'dashboard'
@@ -167,6 +169,7 @@ export function DashboardPage({ navigate, markets, marketStates, initialTab = 'd
   const [runnerDrawerOpen, setRunnerDrawerOpen] = useState(false);
   const [marketSearch, setMarketSearch] = useState('');
   const [gmtNow, setGmtNow] = useState(() => new Date().toISOString().slice(0, 19).replace('T', ' '));
+  const [derivCandlesMap, setDerivCandlesMap] = useState<Record<string, CandleBar[]>>({});
 
   // Hidden 10-click Admin Trigger State
   const clickCountRef = useRef(0);
@@ -217,6 +220,24 @@ export function DashboardPage({ navigate, markets, marketStates, initialTab = 'd
     }, 1000);
     return () => window.clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const key = `${selectedSymbol}:${timeframe}`;
+    fetch(`/api/markets/history?symbol=${encodeURIComponent(selectedSymbol)}&timeframe=${encodeURIComponent(timeframe)}&count=90`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data && Array.isArray(data.candles) && data.candles.length > 0) {
+          setDerivCandlesMap((prev) => ({ ...prev, [key]: data.candles }));
+        }
+      })
+      .catch(() => {
+        // graceful local fallback
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSymbol, timeframe]);
 
   const handleHeaderLogoClick = () => {
     const now = Date.now();
@@ -397,7 +418,24 @@ export function DashboardPage({ navigate, markets, marketStates, initialTab = 'd
   const unreadCount = notifications.filter((n) => !n.read).length;
   const userInitials = getInitialsFromEmail(user.email, user.fullName);
   const currentAsset = markets.find((m) => m.symbol === selectedSymbol) || markets[0];
-  const currentMarketState = marketStates[selectedSymbol];
+  const baseMarketState = marketStates[selectedSymbol];
+  const hydratedCandles = derivCandlesMap[`${selectedSymbol}:${timeframe}`];
+  const currentMarketState =
+    baseMarketState && hydratedCandles && hydratedCandles.length > 0
+      ? {
+          ...baseMarketState,
+          candles: hydratedCandles.map((c, idx) =>
+            idx === hydratedCandles.length - 1
+              ? {
+                  ...c,
+                  close: baseMarketState.price,
+                  high: Math.max(c.high, baseMarketState.price),
+                  low: Math.min(c.low, baseMarketState.price),
+                }
+              : c
+          ),
+        }
+      : baseMarketState;
   const openPositions = trades.filter((t) => t.status === 'open');
   const realAccounts = accounts.filter((a) => a.accountType === 'real');
   const demoAccounts = accounts.filter((a) => a.accountType === 'demo');
@@ -1075,21 +1113,27 @@ export function DashboardPage({ navigate, markets, marketStates, initialTab = 'd
           </div>
         )}
 
-        {(activeTab === 'charts' || activeTab === 'trading_view') && currentMarketState && (
-          <div className="space-y-3">
-            {activeTab === 'trading_view' && (
-              <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1724] px-3.5 py-2 text-xs text-slate-500 flex items-center justify-between gap-2">
-                <span>Load an Up/Down or Only Ups/Downs bot to enable chart contract sync</span>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('bot_builder')}
-                  className="text-sky-600 dark:text-sky-400 font-semibold whitespace-nowrap hover:underline"
-                >
-                  Open Bot Builder →
-                </button>
-              </div>
-            )}
+        {activeTab === 'trading_view' && currentMarketState && (
+          <MT5TradingView
+            markets={markets}
+            marketStates={{
+              ...marketStates,
+              [selectedSymbol]: currentMarketState,
+            }}
+            selectedSymbol={selectedSymbol}
+            onSelectSymbol={setSelectedSymbol}
+            timeframe={timeframe}
+            onTimeframeChange={setTimeframe}
+            activeAccount={activeAccount}
+            trades={trades}
+            notifications={notifications}
+            onRefreshState={refreshUserState}
+            onAccountUpdated={setAccountBalanceLocal}
+          />
+        )}
 
+        {activeTab === 'charts' && currentMarketState && (
+          <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2">
                 <select
@@ -1108,15 +1152,13 @@ export function DashboardPage({ navigate, markets, marketStates, initialTab = 'd
               </div>
 
               <div className="flex items-center gap-2">
-                {activeTab === 'charts' && (
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('trading_view')}
-                    className="px-3.5 py-2 rounded-lg bg-[#0b5ed7] hover:bg-[#094db3] text-white text-xs font-bold shadow-sm"
-                  >
-                    Trading View
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('trading_view')}
+                  className="px-3.5 py-2 rounded-lg bg-[#0b5ed7] hover:bg-[#094db3] text-white text-xs font-bold shadow-sm"
+                >
+                  Trading View
+                </button>
                 <button
                   type="button"
                   onClick={() => void openManualPosition('BUY')}
@@ -1137,10 +1179,10 @@ export function DashboardPage({ navigate, markets, marketStates, initialTab = 'd
             <TradingChart
               asset={currentAsset}
               marketState={currentMarketState}
-              mode={activeTab === 'trading_view' ? 'candles' : 'area'}
+              mode="area"
               timeframe={timeframe}
               onTimeframeChange={setTimeframe}
-              showDrawingTools={activeTab === 'trading_view'}
+              showDrawingTools={false}
               heightClass="h-[460px] lg:h-[560px]"
             />
           </div>
@@ -1489,6 +1531,10 @@ export function DashboardPage({ navigate, markets, marketStates, initialTab = 'd
               >
                 <LogOut className="w-4 h-4" /> Log out
               </button>
+
+              <div className="pt-2">
+                <PWAInstallButton compact />
+              </div>
             </div>
 
             <div className="mt-auto pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-center gap-2 text-[11px] font-mono text-slate-500">
