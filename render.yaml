@@ -1,0 +1,41 @@
+services:
+  - type: web
+    name: pipflow
+    runtime: node
+    plan: starter
+    numInstances: 1
+    buildCommand: npm install && npm run lint && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: AUTH_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: APP_URL
+        sync: false
+      - key: PIPFLOW_ADMIN_PASSWORD_HASH
+        sync: false
+      - key: DERIV_CLIENT_ID
+        sync: false
+      - key: DERIV_CLIENT_SECRET
+        sync: false
+      - key: DERIV_REDIRECT_URI
+        sync: false
+      - key: BREVO_API_KEY
+        sync: false
+      - key: BREVO_SENDER_EMAIL
+        sync: false
+      - key: BREVO_SENDER_NAME
+        value: PIPFLOW
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_CLIENT_EMAIL
+        sync: false
+      - key: FIREBASE_PRIVATE_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
