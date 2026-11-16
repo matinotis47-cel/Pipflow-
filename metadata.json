@@ -1,8 +1,0 @@
-{
-  "name": "PIPFLOW",
-  "description": "PIPFLOW — Multi-Asset Educational Trading Interface, AI Bot Studio & Real-Time Market Workspace (pipflow.site)",
-  "requestFramePermissions": [],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
-}
